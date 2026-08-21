@@ -1,8 +1,10 @@
 # hybridge-blog-api
 
-REST API for a blog platform, built with Node.js and Express. Handles user registration and login with JWT authentication, and exposes protected endpoints for creating and managing posts and comments. Data is persisted in PostgreSQL through Sequelize ORM.
+REST API for a blog platform, built with Node.js and Express. Handles authentication with Passport.js and JSON Web Tokens, and exposes protected endpoints for managing posts and authors. Data is persisted in PostgreSQL (Supabase) through Sequelize ORM.
 
-**Live API:** `https://<your-render-url>.onrender.com`
+**Live API:** https://hybridge-blog-api-9iiu.onrender.com
+
+> Hosted on Render's free tier: the instance sleeps after ~15 minutes without traffic, so the first request may take 30–60 seconds to respond.
 
 ---
 
@@ -13,21 +15,22 @@ REST API for a blog platform, built with Node.js and Express. Handles user regis
 | Runtime | Node.js |
 | Framework | Express |
 | ORM | Sequelize (with migrations) |
-| Database | PostgreSQL |
-| Auth | Passport.js + JSON Web Tokens |
+| Database | PostgreSQL (Supabase) |
+| Auth | Passport.js (local + JWT strategies), bcryptjs, jsonwebtoken |
 | Deployment | Render |
 
 ---
 
 ## Features
 
-- User registration and login with hashed passwords
-- Stateless authentication via JWT, verified by custom middleware
-- Protected routes: only authenticated users can create, edit or delete content
-- Ownership checks so users can only modify their own resources
-- Schema managed through Sequelize migrations, not auto-sync
-- CORS enabled for cross-origin clients
-- Environment-based configuration (development / production), with SSL enforced in production
+- User registration and login with passwords hashed via bcryptjs
+- Two Passport strategies: local for login, JWT for protecting routes
+- Stateless authentication through a reusable auth middleware
+- Full CRUD for posts and authors, with write operations behind authentication
+- Soft deletes on users (`paranoid: true`, `deletedAt`)
+- Schema managed through Sequelize migrations rather than auto-sync
+- Environment-based configuration, with SSL enforced on the production connection to Supabase
+- CORS enabled
 
 ---
 
@@ -35,12 +38,15 @@ REST API for a blog platform, built with Node.js and Express. Handles user regis
 
 ```
 .
-├── config/          # Sequelize database configuration per environment
-├── middlewares/     # Authentication and authorization middleware
-├── migrations/      # Sequelize migration files (schema history)
-├── models/          # Sequelize model definitions and associations
-├── app.js           # Application entry point and route mounting
-├── .sequelizerc     # Custom paths for Sequelize CLI
+├── config/                  # Sequelize configuration per environment
+├── models/                  # Sequelize models and associations
+├── migrations/              # Schema migration history
+├── middlewares/
+│   └── auth.js              # JWT verification middleware
+├── hybridge-blog-api/
+│   ├── index.js             # Application entry point
+│   └── posts.js             # Post routes
+├── .sequelizerc             # Custom paths for the Sequelize CLI
 └── package.json
 ```
 
@@ -66,9 +72,9 @@ npm install
 Create a `.env` file in the project root:
 
 ```env
-PORT=3000
-DATABASE_URL=postgresql://user:password@host:5432/database
+DATABASE_URL=postgresql://user:password@host:5432/database?sslmode=require
 JWT_SECRET=your_secret_key
+PORT=3000
 NODE_ENV=development
 ```
 
@@ -81,7 +87,7 @@ npx sequelize-cli db:migrate
 ### Run
 
 ```bash
-npm start
+node hybridge-blog-api/index.js
 ```
 
 The API will be available at `http://localhost:3000`.
@@ -90,53 +96,34 @@ The API will be available at `http://localhost:3000`.
 
 ## API reference
 
-All protected endpoints require an `Authorization` header:
+Protected endpoints require an `Authorization` header:
 
 ```
 Authorization: Bearer <token>
 ```
 
-### Authentication
-
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/register` | No | Create a new user account |
-| `POST` | `/auth/login` | No | Authenticate and receive a JWT |
+| `GET` | `/` | No | Health check |
+| `POST` | `/api/login` | No | Authenticate and receive a JWT |
+| `GET` | `/api/posts` | No | List all posts |
+| `GET` | `/api/posts/:id` | No | Retrieve a single post |
+| `POST` | `/api/posts` | Yes | Create a post |
+| `PUT` | `/api/posts/:id` | Yes | Update a post |
+| `DELETE` | `/api/posts/:id` | Yes | Delete a post |
+| `GET` | `/api/authors` | No | List all authors |
+| `POST` | `/api/authors` | Yes | Create an author |
 
-### Posts
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/posts` | No | List all posts |
-| `GET` | `/posts/:id` | No | Retrieve a single post |
-| `POST` | `/posts` | Yes | Create a post |
-| `PUT` | `/posts/:id` | Yes | Update a post the user owns |
-| `DELETE` | `/posts/:id` | Yes | Delete a post the user owns |
-
-### Comments
-
-| Method | Endpoint | Auth | Description |
-|---|---|---|---|
-| `GET` | `/posts/:id/comments` | No | List comments on a post |
-| `POST` | `/posts/:id/comments` | Yes | Add a comment to a post |
-| `DELETE` | `/comments/:id` | Yes | Delete a comment the user owns |
+Requests without a valid token on protected routes return `401 Unauthorized`.
 
 ---
 
 ## Example requests
 
-**Register**
-
-```bash
-curl -X POST http://localhost:3000/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"username":"guycho","email":"user@example.com","password":"secret123"}'
-```
-
 **Login**
 
 ```bash
-curl -X POST http://localhost:3000/auth/login \
+curl -X POST https://hybridge-blog-api-9iiu.onrender.com/api/login \
   -H "Content-Type: application/json" \
   -d '{"email":"user@example.com","password":"secret123"}'
 ```
@@ -152,20 +139,25 @@ Response:
 **Create a post**
 
 ```bash
-curl -X POST http://localhost:3000/posts \
+curl -X POST https://hybridge-blog-api-9iiu.onrender.com/api/posts \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
-  -d '{"title":"First post","body":"Post content here"}'
+  -d '{"title":"First post","content":"Post content here","authorId":1}'
 ```
 
 ---
 
 ## Data model
 
-- **User** has many **Posts**
-- **User** has many **Comments**
-- **Post** belongs to **User**, has many **Comments**
-- **Comment** belongs to **User** and to **Post**
+- **Author** has many **Posts**
+- **Post** belongs to **Author** (`authorId`)
+- **User** holds credentials for authentication, with soft-delete enabled
+
+---
+
+## Notes
+
+Deployment surfaced two differences between local and production worth recording: Supabase requires SSL on the production connection, which had to be declared explicitly in the Sequelize `production` config, and dependencies had to be consolidated into the root `package.json` since the build only installs from the repository root.
 
 ---
 
@@ -173,4 +165,4 @@ curl -X POST http://localhost:3000/posts \
 
 Luis Aurelio Mendoza Michel — [GitHub](https://github.com/guychomendoza)
 
-Built as part of the Software Engineering coursework at Hybridge Education.
+Built as coursework for the Software Engineering program at Hybridge Education.
